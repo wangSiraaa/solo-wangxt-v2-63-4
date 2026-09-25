@@ -119,7 +119,10 @@ SPECTACULAR_SETTINGS = {
         "* 同一问题不同角度拍摄只计扣一次（照片挂接到已有事件）；\n"
         "* 已整改后同一位置复发 = 新事件、新处罚；\n"
         "* 扣分归属按**事件发生时**的合同责任区间，与录入时间无关；\n"
-        "* 逾期升级基于可注入时钟；复核通过锁定处罚版本，更正只能追加新版本。"
+        "* 逾期升级基于可注入时钟；复核通过锁定处罚版本，更正只能追加新版本；\n"
+        "* 责任区/合同登记错误通过**修订提案**（基准快照+有效时间）追溯修正："
+        "提案→影响预览→确认发布/撤回/替代；确认前不改归属，"
+        "已锁定处罚保留原合同/承包商快照、只追加审计链；同一时空区间不得发布两个责任归属。"
     ),
     "VERSION": "1.0.0",
     "ENUM_NAME_OVERRIDES": {
@@ -128,6 +131,10 @@ SPECTACULAR_SETTINGS = {
         "CandidateStatusEnum": "assessment.models.DuplicateCandidate.Status",
         "PenaltyStatusEnum": "assessment.models.PenaltyUnit.Status",
         "PenaltyVersionKindEnum": "assessment.models.PenaltyVersion.Kind",
+        "RevisionStatusEnum": "assessment.models.ResponsibilityRevision.Status",
+        "RevisionTargetKindEnum": "assessment.models.ResponsibilityRevision.TargetKind",
+        "RevisionItemKindEnum": "assessment.models.RevisionImpactItem.ItemKind",
+        "RevisionDispositionEnum": "assessment.models.RevisionImpactItem.Disposition",
     },
 }
 

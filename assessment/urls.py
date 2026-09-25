@@ -13,6 +13,8 @@ router.register("rectifications", views.RectificationViewSet, basename="rectific
 router.register("penalties", views.PenaltyUnitViewSet, basename="penalty")
 router.register("penalty-versions", views.PenaltyVersionViewSet, basename="penaltyversion")
 router.register("escalations", views.EscalationRecordViewSet, basename="escalation")
+router.register("revisions", views.ResponsibilityRevisionViewSet, basename="revision")
+router.register("revision-items", views.RevisionImpactItemViewSet, basename="revisionitem")
 
 urlpatterns = [
     path("", include(router.urls)),

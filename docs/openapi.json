@@ -3,7 +3,7 @@
     "info": {
         "title": "街道环卫考核 API",
         "version": "1.0.0",
-        "description": "道路网格 / 保洁合同 / 问题事件 / 证据照片 / 处罚单元管理。\n\n核心规则：\n* 照片感知哈希(pHash)只用于生成**疑似重复候选**，是否同一问题由人工结合位置、时间判断；\n* 同一问题不同角度拍摄只计扣一次（照片挂接到已有事件）；\n* 已整改后同一位置复发 = 新事件、新处罚；\n* 扣分归属按**事件发生时**的合同责任区间，与录入时间无关；\n* 逾期升级基于可注入时钟；复核通过锁定处罚版本，更正只能追加新版本。"
+        "description": "道路网格 / 保洁合同 / 问题事件 / 证据照片 / 处罚单元管理。\n\n核心规则：\n* 照片感知哈希(pHash)只用于生成**疑似重复候选**，是否同一问题由人工结合位置、时间判断；\n* 同一问题不同角度拍摄只计扣一次（照片挂接到已有事件）；\n* 已整改后同一位置复发 = 新事件、新处罚；\n* 扣分归属按**事件发生时**的合同责任区间，与录入时间无关；\n* 逾期升级基于可注入时钟；复核通过锁定处罚版本，更正只能追加新版本；\n* 责任区/合同登记错误通过**修订提案**（基准快照+有效时间）追溯修正：提案→影响预览→确认发布/撤回/替代；确认前不改归属，已锁定处罚保留原合同/承包商快照、只追加审计链；同一时空区间不得发布两个责任归属。"
     },
     "paths": {
         "/api/candidates/": {
@@ -1335,10 +1335,11 @@
                             "enum": [
                                 "correction",
                                 "escalation",
-                                "initial"
+                                "initial",
+                                "revision"
                             ]
                         },
-                        "description": "* `initial` - 初版立案\n* `escalation` - 逾期升级\n* `correction` - 人工更正"
+                        "description": "* `initial` - 初版立案\n* `escalation` - 逾期升级\n* `correction` - 人工更正\n* `revision` - 归属修订"
                     },
                     {
                         "name": "page",
@@ -1694,6 +1695,565 @@
                             "application/json": {
                                 "schema": {
                                     "$ref": "#/components/schemas/RectificationRead"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/revision-items/": {
+            "get": {
+                "operationId": "revision_items_list",
+                "description": "修订影响明细（只读）：待确认调整与已发布审计链的统一查询入口。",
+                "parameters": [
+                    {
+                        "in": "query",
+                        "name": "applied",
+                        "schema": {
+                            "type": "boolean"
+                        }
+                    },
+                    {
+                        "in": "query",
+                        "name": "disposition",
+                        "schema": {
+                            "type": "string",
+                            "title": "处置方式",
+                            "enum": [
+                                "locked_audit",
+                                "photo_context",
+                                "reassign_pending",
+                                "unresolved"
+                            ]
+                        },
+                        "description": "* `reassign_pending` - 待确认调整（确认后改归属）\n* `locked_audit` - 已锁定保留快照（追加审计链）\n* `photo_context` - 证据照片归属上下文变化\n* `unresolved` - 修订后无法归属（阻断确认）"
+                    },
+                    {
+                        "in": "query",
+                        "name": "event",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "in": "query",
+                        "name": "item_kind",
+                        "schema": {
+                            "type": "string",
+                            "title": "对象类型",
+                            "enum": [
+                                "event",
+                                "penalty",
+                                "photo"
+                            ]
+                        },
+                        "description": "* `event` - 问题事件\n* `penalty` - 处罚单元\n* `photo` - 证据照片"
+                    },
+                    {
+                        "name": "page",
+                        "required": false,
+                        "in": "query",
+                        "description": "分页结果集中的页码。",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "in": "query",
+                        "name": "penalty",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "in": "query",
+                        "name": "photo",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "in": "query",
+                        "name": "revision",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "tags": [
+                    "revision-items"
+                ],
+                "security": [
+                    {
+                        "cookieAuth": []
+                    },
+                    {
+                        "basicAuth": []
+                    },
+                    {}
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PaginatedRevisionImpactItemList"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/revision-items/{id}/": {
+            "get": {
+                "operationId": "revision_items_retrieve",
+                "description": "修订影响明细（只读）：待确认调整与已发布审计链的统一查询入口。",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "id",
+                        "schema": {
+                            "type": "integer"
+                        },
+                        "description": "标识此 修订影响明细 的 唯一整数值。",
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "revision-items"
+                ],
+                "security": [
+                    {
+                        "cookieAuth": []
+                    },
+                    {
+                        "basicAuth": []
+                    },
+                    {}
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RevisionImpactItem"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/revisions/": {
+            "get": {
+                "operationId": "revisions_list",
+                "description": "责任区/合同修订：提案（POST）→ 影响预览 → 确认发布 / 撤回 / 替代。\n确认发布前不改任何归属；已锁定处罚保留快照、只追加审计链。",
+                "parameters": [
+                    {
+                        "in": "query",
+                        "name": "grid",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "name": "page",
+                        "required": false,
+                        "in": "query",
+                        "description": "分页结果集中的页码。",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "in": "query",
+                        "name": "status",
+                        "schema": {
+                            "type": "string",
+                            "title": "状态",
+                            "enum": [
+                                "pending",
+                                "published",
+                                "superseded",
+                                "withdrawn"
+                            ]
+                        },
+                        "description": "* `pending` - 待确认\n* `published` - 已发布\n* `withdrawn` - 已撤回\n* `superseded` - 已被替代"
+                    },
+                    {
+                        "in": "query",
+                        "name": "target_contract",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "in": "query",
+                        "name": "target_kind",
+                        "schema": {
+                            "type": "string",
+                            "title": "修订对象类型",
+                            "enum": [
+                                "contract_interval",
+                                "grid_boundary"
+                            ]
+                        },
+                        "description": "* `grid_boundary` - 责任区边界修订\n* `contract_interval` - 合同责任区间修订"
+                    }
+                ],
+                "tags": [
+                    "revisions"
+                ],
+                "security": [
+                    {
+                        "cookieAuth": []
+                    },
+                    {
+                        "basicAuth": []
+                    },
+                    {}
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PaginatedResponsibilityRevisionList"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            },
+            "post": {
+                "operationId": "revisions_create",
+                "description": "登记修订提案（待确认）。带基准快照与有效时间；幂等键重复提交 409。",
+                "tags": [
+                    "revisions"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RevisionCreate"
+                            }
+                        },
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RevisionCreate"
+                            }
+                        },
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RevisionCreate"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "security": [
+                    {
+                        "cookieAuth": []
+                    },
+                    {
+                        "basicAuth": []
+                    },
+                    {}
+                ],
+                "responses": {
+                    "201": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RevisionCreate"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/revisions/{id}/": {
+            "get": {
+                "operationId": "revisions_retrieve",
+                "description": "责任区/合同修订：提案（POST）→ 影响预览 → 确认发布 / 撤回 / 替代。\n确认发布前不改任何归属；已锁定处罚保留快照、只追加审计链。",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "id",
+                        "schema": {
+                            "type": "integer"
+                        },
+                        "description": "标识此 责任区/合同修订 的 唯一整数值。",
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "revisions"
+                ],
+                "security": [
+                    {
+                        "cookieAuth": []
+                    },
+                    {
+                        "basicAuth": []
+                    },
+                    {}
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ResponsibilityRevision"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/revisions/{id}/confirm/": {
+            "post": {
+                "operationId": "revisions_confirm_create",
+                "description": "确认发布：锁内复查时空冲突并重算影响，单事务应用全部变更；\n重叠/重复/并发发布 409，无法归属 422，失败整体回滚。",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "id",
+                        "schema": {
+                            "type": "integer"
+                        },
+                        "description": "标识此 责任区/合同修订 的 唯一整数值。",
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "revisions"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RevisionAction"
+                            }
+                        },
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RevisionAction"
+                            }
+                        },
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RevisionAction"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "cookieAuth": []
+                    },
+                    {
+                        "basicAuth": []
+                    },
+                    {}
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ResponsibilityRevision"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/revisions/{id}/preview/": {
+            "post": {
+                "operationId": "revisions_preview_create",
+                "description": "影响预览：精确计算受影响照片/事件/处罚归属，生成待确认调整（不改归属）。",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "id",
+                        "schema": {
+                            "type": "integer"
+                        },
+                        "description": "标识此 责任区/合同修订 的 唯一整数值。",
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "revisions"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RevisionAction"
+                            }
+                        },
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RevisionAction"
+                            }
+                        },
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RevisionAction"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "cookieAuth": []
+                    },
+                    {
+                        "basicAuth": []
+                    },
+                    {}
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ResponsibilityRevision"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/revisions/{id}/supersede/": {
+            "post": {
+                "operationId": "revisions_supersede_create",
+                "description": "以一份新提案替代本修订；旧修订标记为已被替代，不得再发布。",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "id",
+                        "schema": {
+                            "type": "integer"
+                        },
+                        "description": "标识此 责任区/合同修订 的 唯一整数值。",
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "revisions"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RevisionCreate"
+                            }
+                        },
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RevisionCreate"
+                            }
+                        },
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RevisionCreate"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "security": [
+                    {
+                        "cookieAuth": []
+                    },
+                    {
+                        "basicAuth": []
+                    },
+                    {}
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ResponsibilityRevision"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/revisions/{id}/withdraw/": {
+            "post": {
+                "operationId": "revisions_withdraw_create",
+                "description": "撤回待确认的修订（已发布不可撤回，只能再提新修订替代）。",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "id",
+                        "schema": {
+                            "type": "integer"
+                        },
+                        "description": "标识此 责任区/合同修订 的 唯一整数值。",
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "revisions"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RevisionAction"
+                            }
+                        },
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RevisionAction"
+                            }
+                        },
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RevisionAction"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "cookieAuth": []
+                    },
+                    {
+                        "basicAuth": []
+                    },
+                    {}
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ResponsibilityRevision"
                                 }
                             }
                         },
@@ -2494,6 +3054,68 @@
                     }
                 }
             },
+            "PaginatedResponsibilityRevisionList": {
+                "type": "object",
+                "required": [
+                    "count",
+                    "results"
+                ],
+                "properties": {
+                    "count": {
+                        "type": "integer",
+                        "example": 123
+                    },
+                    "next": {
+                        "type": "string",
+                        "nullable": true,
+                        "format": "uri",
+                        "example": "http://api.example.org/accounts/?page=4"
+                    },
+                    "previous": {
+                        "type": "string",
+                        "nullable": true,
+                        "format": "uri",
+                        "example": "http://api.example.org/accounts/?page=2"
+                    },
+                    "results": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/ResponsibilityRevision"
+                        }
+                    }
+                }
+            },
+            "PaginatedRevisionImpactItemList": {
+                "type": "object",
+                "required": [
+                    "count",
+                    "results"
+                ],
+                "properties": {
+                    "count": {
+                        "type": "integer",
+                        "example": 123
+                    },
+                    "next": {
+                        "type": "string",
+                        "nullable": true,
+                        "format": "uri",
+                        "example": "http://api.example.org/accounts/?page=4"
+                    },
+                    "previous": {
+                        "type": "string",
+                        "nullable": true,
+                        "format": "uri",
+                        "example": "http://api.example.org/accounts/?page=2"
+                    },
+                    "results": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/RevisionImpactItem"
+                        }
+                    }
+                }
+            },
             "PaginatedRoadGridList": {
                 "type": "object",
                 "required": [
@@ -2745,6 +3367,13 @@
                         },
                         "readOnly": true
                     },
+                    "revision_impacts": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/RevisionImpactItem"
+                        },
+                        "readOnly": true
+                    },
                     "created_at": {
                         "type": "string",
                         "format": "date-time",
@@ -2765,6 +3394,7 @@
                     "penalty_no",
                     "points",
                     "reviews",
+                    "revision_impacts",
                     "status",
                     "status_display",
                     "versions"
@@ -2840,10 +3470,11 @@
                 "enum": [
                     "initial",
                     "escalation",
-                    "correction"
+                    "correction",
+                    "revision"
                 ],
                 "type": "string",
-                "description": "* `initial` - 初版立案\n* `escalation` - 逾期升级\n* `correction` - 人工更正"
+                "description": "* `initial` - 初版立案\n* `escalation` - 逾期升级\n* `correction` - 人工更正\n* `revision` - 归属修订"
             },
             "PhotoBrief": {
                 "type": "object",
@@ -3104,6 +3735,181 @@
                     "submitted_at"
                 ]
             },
+            "ResponsibilityRevision": {
+                "type": "object",
+                "description": "修订提案（含基准快照、修订内容、有效时间与影响明细）。",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "readOnly": true
+                    },
+                    "revision_no": {
+                        "type": "string",
+                        "readOnly": true,
+                        "title": "修订编号"
+                    },
+                    "target_kind": {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/RevisionTargetKindEnum"
+                            }
+                        ],
+                        "readOnly": true,
+                        "title": "修订对象类型"
+                    },
+                    "target_kind_display": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "grid": {
+                        "type": "integer",
+                        "readOnly": true,
+                        "title": "目标网格"
+                    },
+                    "target_contract": {
+                        "type": "integer",
+                        "readOnly": true,
+                        "nullable": true,
+                        "title": "被修订合同（为空表示新增合同）"
+                    },
+                    "baseline_snapshot": {
+                        "readOnly": true,
+                        "title": "基准快照（修订前登记状态）"
+                    },
+                    "proposed_payload": {
+                        "readOnly": true,
+                        "title": "修订内容（新边界/新合同责任）"
+                    },
+                    "effective_from": {
+                        "type": "string",
+                        "format": "date-time",
+                        "readOnly": true,
+                        "title": "生效时间（含）"
+                    },
+                    "effective_to": {
+                        "type": "string",
+                        "format": "date-time",
+                        "readOnly": true,
+                        "nullable": true,
+                        "title": "生效结束时间（不含）"
+                    },
+                    "reason": {
+                        "type": "string",
+                        "readOnly": true,
+                        "title": "修订原因"
+                    },
+                    "status": {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/RevisionStatusEnum"
+                            }
+                        ],
+                        "readOnly": true,
+                        "title": "状态"
+                    },
+                    "status_display": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "idempotency_key": {
+                        "type": "string",
+                        "readOnly": true,
+                        "nullable": true,
+                        "title": "幂等键"
+                    },
+                    "impact_summary": {
+                        "readOnly": true,
+                        "title": "影响汇总"
+                    },
+                    "supersedes": {
+                        "type": "integer",
+                        "readOnly": true,
+                        "nullable": true,
+                        "title": "本修订替代的旧修订"
+                    },
+                    "superseded_by": {
+                        "type": "integer",
+                        "nullable": true,
+                        "readOnly": true
+                    },
+                    "created_by": {
+                        "type": "string",
+                        "readOnly": true,
+                        "title": "提案人"
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "readOnly": true,
+                        "title": "创建时间"
+                    },
+                    "previewed_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "readOnly": true,
+                        "nullable": true,
+                        "title": "最近预览时间"
+                    },
+                    "published_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "readOnly": true,
+                        "nullable": true,
+                        "title": "发布时间"
+                    },
+                    "published_by": {
+                        "type": "string",
+                        "readOnly": true,
+                        "title": "发布人"
+                    },
+                    "withdrawn_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "readOnly": true,
+                        "nullable": true,
+                        "title": "撤回时间"
+                    },
+                    "withdrawn_by": {
+                        "type": "string",
+                        "readOnly": true,
+                        "title": "撤回人"
+                    },
+                    "impact_items": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/RevisionImpactItem"
+                        },
+                        "readOnly": true
+                    }
+                },
+                "required": [
+                    "baseline_snapshot",
+                    "created_at",
+                    "created_by",
+                    "effective_from",
+                    "effective_to",
+                    "grid",
+                    "id",
+                    "idempotency_key",
+                    "impact_items",
+                    "impact_summary",
+                    "previewed_at",
+                    "proposed_payload",
+                    "published_at",
+                    "published_by",
+                    "reason",
+                    "revision_no",
+                    "status",
+                    "status_display",
+                    "superseded_by",
+                    "supersedes",
+                    "target_contract",
+                    "target_kind",
+                    "target_kind_display",
+                    "withdrawn_at",
+                    "withdrawn_by"
+                ]
+            },
             "ReviewRecord": {
                 "type": "object",
                 "properties": {
@@ -3152,6 +3958,265 @@
                     "reviewer",
                     "version"
                 ]
+            },
+            "RevisionAction": {
+                "type": "object",
+                "description": "预览/确认/撤回动作的请求体（可注入时钟）。",
+                "properties": {
+                    "actor": {
+                        "type": "string",
+                        "default": "system",
+                        "maxLength": 64
+                    },
+                    "now": {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "可选：注入动作时间"
+                    }
+                }
+            },
+            "RevisionCreate": {
+                "type": "object",
+                "description": "新建修订提案 / 替代修订的请求体。",
+                "properties": {
+                    "target_kind": {
+                        "$ref": "#/components/schemas/RevisionTargetKindEnum"
+                    },
+                    "grid": {
+                        "type": "integer"
+                    },
+                    "target_contract": {
+                        "type": "integer",
+                        "nullable": true,
+                        "description": "被修订的合同；留空表示在网格内新增合同区间"
+                    },
+                    "proposed_payload": {
+                        "description": "边界修订: {\"geom\": <GeoJSON Polygon>}；合同修订: {\"contractor_name\": \"...\", \"code\": \"新增时必填\"}"
+                    },
+                    "effective_from": {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "生效时间（含）"
+                    },
+                    "effective_to": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": true,
+                        "description": "生效结束时间（不含）；合同修订必填"
+                    },
+                    "reason": {
+                        "type": "string",
+                        "default": "",
+                        "maxLength": 512
+                    },
+                    "idempotency_key": {
+                        "type": "string",
+                        "description": "提案幂等键；重复提交返回 409",
+                        "maxLength": 64
+                    },
+                    "actor": {
+                        "type": "string",
+                        "default": "system",
+                        "maxLength": 64
+                    }
+                },
+                "required": [
+                    "effective_from",
+                    "grid",
+                    "proposed_payload",
+                    "target_kind"
+                ]
+            },
+            "RevisionDispositionEnum": {
+                "enum": [
+                    "reassign_pending",
+                    "locked_audit",
+                    "photo_context",
+                    "unresolved"
+                ],
+                "type": "string",
+                "description": "* `reassign_pending` - 待确认调整（确认后改归属）\n* `locked_audit` - 已锁定保留快照（追加审计链）\n* `photo_context` - 证据照片归属上下文变化\n* `unresolved` - 修订后无法归属（阻断确认）"
+            },
+            "RevisionImpactItem": {
+                "type": "object",
+                "description": "修订影响明细（确认前=待确认调整，确认后=审计链记录）。",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "readOnly": true
+                    },
+                    "revision": {
+                        "type": "integer",
+                        "readOnly": true,
+                        "title": "修订"
+                    },
+                    "revision_no": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "item_kind": {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/RevisionItemKindEnum"
+                            }
+                        ],
+                        "readOnly": true,
+                        "title": "对象类型"
+                    },
+                    "item_kind_display": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "disposition": {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/RevisionDispositionEnum"
+                            }
+                        ],
+                        "readOnly": true,
+                        "title": "处置方式"
+                    },
+                    "disposition_display": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "event": {
+                        "type": "integer",
+                        "readOnly": true,
+                        "nullable": true,
+                        "title": "受影响事件"
+                    },
+                    "penalty": {
+                        "type": "integer",
+                        "readOnly": true,
+                        "nullable": true,
+                        "title": "受影响处罚单元"
+                    },
+                    "photo": {
+                        "type": "integer",
+                        "readOnly": true,
+                        "nullable": true,
+                        "title": "受影响照片"
+                    },
+                    "old_grid": {
+                        "type": "integer",
+                        "readOnly": true,
+                        "nullable": true,
+                        "title": "原网格"
+                    },
+                    "new_grid": {
+                        "type": "integer",
+                        "readOnly": true,
+                        "nullable": true,
+                        "title": "新网格"
+                    },
+                    "old_contract": {
+                        "type": "integer",
+                        "readOnly": true,
+                        "nullable": true,
+                        "title": "原合同"
+                    },
+                    "new_contract": {
+                        "type": "integer",
+                        "readOnly": true,
+                        "nullable": true,
+                        "title": "新合同"
+                    },
+                    "old_contract_code": {
+                        "type": "string",
+                        "readOnly": true,
+                        "title": "原合同编号快照"
+                    },
+                    "new_contract_code": {
+                        "type": "string",
+                        "readOnly": true,
+                        "title": "新合同编号快照"
+                    },
+                    "old_contractor_name": {
+                        "type": "string",
+                        "readOnly": true,
+                        "title": "原承包商快照"
+                    },
+                    "new_contractor_name": {
+                        "type": "string",
+                        "readOnly": true,
+                        "title": "新承包商快照"
+                    },
+                    "applied": {
+                        "type": "boolean",
+                        "readOnly": true,
+                        "title": "是否已随发布生效"
+                    },
+                    "applied_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "readOnly": true,
+                        "nullable": true,
+                        "title": "生效时间"
+                    },
+                    "note": {
+                        "type": "string",
+                        "readOnly": true,
+                        "title": "说明"
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "readOnly": true,
+                        "title": "创建时间"
+                    }
+                },
+                "required": [
+                    "applied",
+                    "applied_at",
+                    "created_at",
+                    "disposition",
+                    "disposition_display",
+                    "event",
+                    "id",
+                    "item_kind",
+                    "item_kind_display",
+                    "new_contract",
+                    "new_contract_code",
+                    "new_contractor_name",
+                    "new_grid",
+                    "note",
+                    "old_contract",
+                    "old_contract_code",
+                    "old_contractor_name",
+                    "old_grid",
+                    "penalty",
+                    "photo",
+                    "revision",
+                    "revision_no"
+                ]
+            },
+            "RevisionItemKindEnum": {
+                "enum": [
+                    "event",
+                    "penalty",
+                    "photo"
+                ],
+                "type": "string",
+                "description": "* `event` - 问题事件\n* `penalty` - 处罚单元\n* `photo` - 证据照片"
+            },
+            "RevisionStatusEnum": {
+                "enum": [
+                    "pending",
+                    "published",
+                    "withdrawn",
+                    "superseded"
+                ],
+                "type": "string",
+                "description": "* `pending` - 待确认\n* `published` - 已发布\n* `withdrawn` - 已撤回\n* `superseded` - 已被替代"
+            },
+            "RevisionTargetKindEnum": {
+                "enum": [
+                    "grid_boundary",
+                    "contract_interval"
+                ],
+                "type": "string",
+                "description": "* `grid_boundary` - 责任区边界修订\n* `contract_interval` - 合同责任区间修订"
             },
             "RoadGrid": {
                 "type": "object",

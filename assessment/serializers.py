@@ -14,7 +14,9 @@ from assessment.models import (
     PenaltyVersion,
     ProblemEvent,
     Rectification,
+    ResponsibilityRevision,
     ReviewRecord,
+    RevisionImpactItem,
     RoadGrid,
 )
 from assessment.services.duplicates import generate_candidates_for_photo
@@ -151,6 +153,27 @@ class ReviewRecordSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class RevisionImpactItemSerializer(serializers.ModelSerializer):
+    """修订影响明细（确认前=待确认调整，确认后=审计链记录）。"""
+
+    revision_no = serializers.CharField(source="revision.revision_no", read_only=True)
+    item_kind_display = serializers.CharField(source="get_item_kind_display", read_only=True)
+    disposition_display = serializers.CharField(source="get_disposition_display", read_only=True)
+
+    class Meta:
+        model = RevisionImpactItem
+        fields = [
+            "id", "revision", "revision_no", "item_kind", "item_kind_display",
+            "disposition", "disposition_display",
+            "event", "penalty", "photo",
+            "old_grid", "new_grid", "old_contract", "new_contract",
+            "old_contract_code", "new_contract_code",
+            "old_contractor_name", "new_contractor_name",
+            "applied", "applied_at", "note", "created_at",
+        ]
+        read_only_fields = fields
+
+
 class EventBriefSerializer(serializers.ModelSerializer):
     location = GeometryField(read_only=True)
 
@@ -167,6 +190,8 @@ class PenaltyUnitSerializer(serializers.ModelSerializer):
     versions = PenaltyVersionSerializer(many=True, read_only=True)
     escalations = EscalationRecordSerializer(many=True, read_only=True)
     reviews = ReviewRecordSerializer(many=True, read_only=True)
+    # 处罚追溯：归属修订审计链（锁定处罚保留快照，修订只追加记录）
+    revision_impacts = RevisionImpactItemSerializer(many=True, read_only=True)
     status_display = serializers.CharField(source="get_status_display", read_only=True)
     locked_version_no = serializers.SerializerMethodField()
 
@@ -176,7 +201,7 @@ class PenaltyUnitSerializer(serializers.ModelSerializer):
             "id", "penalty_no", "event", "contract", "contractor_name",
             "points", "escalation_level", "status", "status_display",
             "locked_version", "locked_version_no",
-            "versions", "escalations", "reviews", "created_at",
+            "versions", "escalations", "reviews", "revision_impacts", "created_at",
         ]
         read_only_fields = fields
 
@@ -220,3 +245,62 @@ class ProblemEventSerializer(serializers.ModelSerializer):
             "photos", "penalty", "rectification", "created_at",
         ]
         read_only_fields = fields
+
+
+class ResponsibilityRevisionSerializer(serializers.ModelSerializer):
+    """修订提案（含基准快照、修订内容、有效时间与影响明细）。"""
+
+    impact_items = RevisionImpactItemSerializer(many=True, read_only=True)
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+    target_kind_display = serializers.CharField(source="get_target_kind_display", read_only=True)
+    superseded_by = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ResponsibilityRevision
+        fields = [
+            "id", "revision_no", "target_kind", "target_kind_display",
+            "grid", "target_contract", "baseline_snapshot", "proposed_payload",
+            "effective_from", "effective_to", "reason",
+            "status", "status_display", "idempotency_key", "impact_summary",
+            "supersedes", "superseded_by",
+            "created_by", "created_at", "previewed_at",
+            "published_at", "published_by", "withdrawn_at", "withdrawn_by",
+            "impact_items",
+        ]
+        read_only_fields = fields
+
+    @extend_schema_field(serializers.IntegerField(allow_null=True))
+    def get_superseded_by(self, obj) -> int | None:
+        newer = obj.superseded_revisions.first()
+        return newer.id if newer else None
+
+
+class RevisionCreateSerializer(serializers.Serializer):
+    """新建修订提案 / 替代修订的请求体。"""
+
+    target_kind = serializers.ChoiceField(choices=ResponsibilityRevision.TargetKind.choices)
+    grid = serializers.PrimaryKeyRelatedField(queryset=RoadGrid.objects.all())
+    target_contract = serializers.PrimaryKeyRelatedField(
+        queryset=CleaningContract.objects.all(), required=False, allow_null=True,
+        help_text="被修订的合同；留空表示在网格内新增合同区间",
+    )
+    proposed_payload = serializers.JSONField(
+        help_text='边界修订: {"geom": <GeoJSON Polygon>}；合同修订: {"contractor_name": "...", "code": "新增时必填"}',
+    )
+    effective_from = serializers.DateTimeField(help_text="生效时间（含）")
+    effective_to = serializers.DateTimeField(
+        required=False, allow_null=True, help_text="生效结束时间（不含）；合同修订必填",
+    )
+    reason = serializers.CharField(required=False, allow_blank=True, default="", max_length=512)
+    idempotency_key = serializers.CharField(
+        required=False, allow_blank=False, max_length=64,
+        help_text="提案幂等键；重复提交返回 409",
+    )
+    actor = serializers.CharField(required=False, default="system", max_length=64)
+
+
+class RevisionActionSerializer(serializers.Serializer):
+    """预览/确认/撤回动作的请求体（可注入时钟）。"""
+
+    actor = serializers.CharField(required=False, default="system", max_length=64)
+    now = serializers.DateTimeField(required=False, help_text="可选：注入动作时间")

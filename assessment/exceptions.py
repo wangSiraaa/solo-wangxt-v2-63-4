@@ -53,6 +53,31 @@ class PhotoAlreadyLinked(DomainError):
     default_detail = "照片已关联事件，不能重复立案"
 
 
+class InvalidRevision(DomainError):
+    status_code = 400
+    default_detail = "修订提案参数无效"
+
+
+class RevisionConflict(DomainError):
+    status_code = 409
+    default_detail = "修订与已登记的责任归属冲突：同一时空区间不得发布两个责任归属"
+
+
+class RevisionNotActionable(DomainError):
+    status_code = 409
+    default_detail = "修订当前状态不允许该操作"
+
+
+class DuplicateRevision(DomainError):
+    status_code = 409
+    default_detail = "相同幂等键的修订提案已存在，疑似重复提交"
+
+
+class UnresolvedAttribution(DomainError):
+    status_code = 422
+    default_detail = "修订后存在无法归属的未锁定事件，需先补齐合同或调整边界"
+
+
 def api_exception_handler(exc, context):
     """把 DomainError 转成 DRF 的标准错误响应体。"""
     from rest_framework.exceptions import APIException

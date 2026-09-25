@@ -1,4 +1,5 @@
 """API 视图。所有写操作都委托给 services 层（领域规则集中、时钟可注入）。"""
+from drf_spectacular.utils import extend_schema
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -12,6 +13,8 @@ from assessment.models import (
     PenaltyVersion,
     ProblemEvent,
     Rectification,
+    ResponsibilityRevision,
+    RevisionImpactItem,
     RoadGrid,
 )
 from assessment.serializers import (
@@ -29,6 +32,10 @@ from assessment.serializers import (
     ProblemEventSerializer,
     RectificationReadSerializer,
     RectifyRequestSerializer,
+    ResponsibilityRevisionSerializer,
+    RevisionActionSerializer,
+    RevisionCreateSerializer,
+    RevisionImpactItemSerializer,
     RoadGridSerializer,
 )
 from assessment.services.clock import resolve_clock
@@ -37,6 +44,13 @@ from assessment.services.escalation import run_escalation
 from assessment.services.events import create_event_from_photo
 from assessment.services.penalties import correct_penalty, review_penalty
 from assessment.services.rectification import submit_rectification
+from assessment.services.revisions import (
+    confirm_revision,
+    create_revision,
+    preview_revision,
+    supersede_revision,
+    withdraw_revision,
+)
 
 
 class RoadGridViewSet(viewsets.ModelViewSet):
@@ -175,7 +189,7 @@ class PenaltyUnitViewSet(viewsets.mixins.RetrieveModelMixin,
 
     queryset = PenaltyUnit.objects.select_related(
         "event", "contract", "locked_version",
-    ).prefetch_related("versions", "escalations", "reviews").all()
+    ).prefetch_related("versions", "escalations", "reviews", "revision_impacts").all()
     serializer_class = PenaltyUnitSerializer
     filterset_fields = ["status", "contractor_name", "contract", "event"]
 
@@ -254,3 +268,91 @@ class EscalationRecordViewSet(viewsets.mixins.RetrieveModelMixin,
             },
             status=status.HTTP_201_CREATED if result.created_count else status.HTTP_200_OK,
         )
+
+
+class ResponsibilityRevisionViewSet(viewsets.mixins.CreateModelMixin,
+                                    viewsets.mixins.RetrieveModelMixin,
+                                    viewsets.mixins.ListModelMixin,
+                                    viewsets.GenericViewSet):
+    """
+    责任区/合同修订：提案（POST）→ 影响预览 → 确认发布 / 撤回 / 替代。
+    确认发布前不改任何归属；已锁定处罚保留快照、只追加审计链。
+    """
+
+    queryset = ResponsibilityRevision.objects.select_related(
+        "grid", "target_contract", "supersedes",
+    ).prefetch_related("impact_items", "superseded_revisions").all()
+    serializer_class = ResponsibilityRevisionSerializer
+    filterset_fields = ["status", "target_kind", "grid", "target_contract"]
+
+    def get_serializer_class(self):
+        if self.action in ("create", "supersede"):
+            return RevisionCreateSerializer
+        return ResponsibilityRevisionSerializer
+
+    def create(self, request, *args, **kwargs):
+        """登记修订提案（待确认）。带基准快照与有效时间；幂等键重复提交 409。"""
+        payload = RevisionCreateSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        revision = create_revision(**payload.validated_data)
+        return Response(
+            ResponsibilityRevisionSerializer(revision).data, status=status.HTTP_201_CREATED,
+        )
+
+    def _action_payload(self, request):
+        payload = RevisionActionSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        data = payload.validated_data
+        return data.get("actor", "system"), resolve_clock(data.get("now"))
+
+    @extend_schema(request=RevisionActionSerializer, responses=ResponsibilityRevisionSerializer)
+    @action(detail=True, methods=["post"])
+    def preview(self, request, pk=None):
+        """影响预览：精确计算受影响照片/事件/处罚归属，生成待确认调整（不改归属）。"""
+        actor, clock = self._action_payload(request)
+        revision = preview_revision(self.get_object(), actor=actor, clock=clock)
+        return Response(ResponsibilityRevisionSerializer(revision).data)
+
+    @extend_schema(request=RevisionActionSerializer, responses=ResponsibilityRevisionSerializer)
+    @action(detail=True, methods=["post"])
+    def confirm(self, request, pk=None):
+        """
+        确认发布：锁内复查时空冲突并重算影响，单事务应用全部变更；
+        重叠/重复/并发发布 409，无法归属 422，失败整体回滚。
+        """
+        actor, clock = self._action_payload(request)
+        revision = confirm_revision(self.get_object(), actor=actor, clock=clock)
+        return Response(ResponsibilityRevisionSerializer(revision).data)
+
+    @extend_schema(request=RevisionActionSerializer, responses=ResponsibilityRevisionSerializer)
+    @action(detail=True, methods=["post"])
+    def withdraw(self, request, pk=None):
+        """撤回待确认的修订（已发布不可撤回，只能再提新修订替代）。"""
+        actor, clock = self._action_payload(request)
+        revision = withdraw_revision(self.get_object(), actor=actor, clock=clock)
+        return Response(ResponsibilityRevisionSerializer(revision).data)
+
+    @extend_schema(request=RevisionCreateSerializer, responses=ResponsibilityRevisionSerializer)
+    @action(detail=True, methods=["post"])
+    def supersede(self, request, pk=None):
+        """以一份新提案替代本修订；旧修订标记为已被替代，不得再发布。"""
+        payload = RevisionCreateSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        data = dict(payload.validated_data)
+        actor = data.pop("actor", "system")
+        new_revision = supersede_revision(self.get_object(), actor=actor, **data)
+        return Response(
+            ResponsibilityRevisionSerializer(new_revision).data, status=status.HTTP_201_CREATED,
+        )
+
+
+class RevisionImpactItemViewSet(viewsets.mixins.RetrieveModelMixin,
+                                viewsets.mixins.ListModelMixin,
+                                viewsets.GenericViewSet):
+    """修订影响明细（只读）：待确认调整与已发布审计链的统一查询入口。"""
+
+    queryset = RevisionImpactItem.objects.select_related(
+        "revision", "event", "penalty", "photo",
+    ).all()
+    serializer_class = RevisionImpactItemSerializer
+    filterset_fields = ["revision", "item_kind", "disposition", "event", "penalty", "photo", "applied"]

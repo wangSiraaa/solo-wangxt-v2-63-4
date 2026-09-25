@@ -10,6 +10,10 @@
                      PenaltyUnit 1:1（唯一扣分单元，归属发生时的合同）
                               │
               PenaltyVersion（只追加、不可变）/ ReviewRecord / EscalationRecord
+
+ResponsibilityRevision（责任区/合同修订提案：基准快照 + 有效时间，提案→预览→确认/撤回/替代）
+                              │
+              RevisionImpactItem（影响明细：确认前是待确认调整，确认后是审计链记录）
 """
 import uuid
 
@@ -257,6 +261,7 @@ class PenaltyVersion(models.Model):
         INITIAL = "initial", "初版立案"
         ESCALATION = "escalation", "逾期升级"
         CORRECTION = "correction", "人工更正"
+        REVISION = "revision", "归属修订"
 
     penalty = models.ForeignKey(PenaltyUnit, on_delete=models.PROTECT, related_name="versions", verbose_name="处罚单元")
     version_no = models.PositiveIntegerField("版本号")
@@ -309,3 +314,137 @@ class ReviewRecord(models.Model):
         verbose_name = "复核记录"
         verbose_name_plural = verbose_name
         ordering = ["-reviewed_at"]
+
+
+class ResponsibilityRevision(TimeStamped):
+    """
+    责任区/合同修订提案。
+
+    生命周期：pending(待确认) -> published(已发布) / withdrawn(已撤回) / superseded(已被替代)。
+    * 提案只登记“基准快照 + 修订内容 + 有效时间”，确认发布前不改任何归属；
+    * 确认发布在单个事务内完成冲突复查、登记变更与影响应用，失败整体回滚；
+    * 同一时空区间不得发布两个责任归属（合同区间重叠 / 网格面重叠一律拒绝）。
+    """
+
+    class TargetKind(models.TextChoices):
+        GRID_BOUNDARY = "grid_boundary", "责任区边界修订"
+        CONTRACT_INTERVAL = "contract_interval", "合同责任区间修订"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "待确认"
+        PUBLISHED = "published", "已发布"
+        WITHDRAWN = "withdrawn", "已撤回"
+        SUPERSEDED = "superseded", "已被替代"
+
+    revision_no = models.CharField("修订编号", max_length=32, unique=True, editable=False)
+    target_kind = models.CharField("修订对象类型", max_length=20, choices=TargetKind.choices)
+    grid = models.ForeignKey(
+        RoadGrid, on_delete=models.PROTECT, related_name="revisions", verbose_name="目标网格",
+    )
+    target_contract = models.ForeignKey(
+        CleaningContract, on_delete=models.PROTECT, related_name="revisions",
+        null=True, blank=True, verbose_name="被修订合同（为空表示新增合同）",
+    )
+    baseline_snapshot = models.JSONField("基准快照（修订前登记状态）", default=dict)
+    proposed_payload = models.JSONField("修订内容（新边界/新合同责任）", default=dict)
+    effective_from = models.DateTimeField("生效时间（含）")
+    effective_to = models.DateTimeField("生效结束时间（不含）", null=True, blank=True)
+    reason = models.CharField("修订原因", max_length=512, blank=True)
+    status = models.CharField("状态", max_length=16, choices=Status.choices, default=Status.PENDING)
+    # 提案幂等键：重复提交被拒绝（409）
+    idempotency_key = models.CharField("幂等键", max_length=64, null=True, blank=True, unique=True)
+    impact_summary = models.JSONField("影响汇总", default=dict)
+    supersedes = models.ForeignKey(
+        "self", on_delete=models.PROTECT, related_name="superseded_revisions",
+        null=True, blank=True, verbose_name="本修订替代的旧修订",
+    )
+    created_by = models.CharField("提案人", max_length=64, blank=True, default="")
+    previewed_at = models.DateTimeField("最近预览时间", null=True, blank=True)
+    published_at = models.DateTimeField("发布时间", null=True, blank=True)
+    published_by = models.CharField("发布人", max_length=64, blank=True, default="")
+    withdrawn_at = models.DateTimeField("撤回时间", null=True, blank=True)
+    withdrawn_by = models.CharField("撤回人", max_length=64, blank=True, default="")
+
+    class Meta:
+        verbose_name = "责任区/合同修订"
+        verbose_name_plural = verbose_name
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["status", "target_kind"]),
+            models.Index(fields=["grid", "effective_from", "effective_to"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self.revision_no:
+            self.revision_no = _new_id("RV")
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.revision_no
+
+
+class RevisionImpactItem(models.Model):
+    """
+    修订影响明细——精确到受影响的事件 / 处罚单元 / 证据照片。
+    确认发布前是“待确认调整”（applied=False，不改归属）；
+    确认发布后成为不可改写的审计链记录（applied=True）。
+    """
+
+    class ItemKind(models.TextChoices):
+        EVENT = "event", "问题事件"
+        PENALTY = "penalty", "处罚单元"
+        PHOTO = "photo", "证据照片"
+
+    class Disposition(models.TextChoices):
+        REASSIGN_PENDING = "reassign_pending", "待确认调整（确认后改归属）"
+        LOCKED_AUDIT = "locked_audit", "已锁定保留快照（追加审计链）"
+        PHOTO_CONTEXT = "photo_context", "证据照片归属上下文变化"
+        UNRESOLVED = "unresolved", "修订后无法归属（阻断确认）"
+
+    revision = models.ForeignKey(
+        ResponsibilityRevision, on_delete=models.CASCADE, related_name="impact_items", verbose_name="修订",
+    )
+    item_kind = models.CharField("对象类型", max_length=16, choices=ItemKind.choices)
+    disposition = models.CharField("处置方式", max_length=20, choices=Disposition.choices)
+    event = models.ForeignKey(
+        ProblemEvent, on_delete=models.SET_NULL, related_name="revision_impacts",
+        null=True, blank=True, verbose_name="受影响事件",
+    )
+    penalty = models.ForeignKey(
+        PenaltyUnit, on_delete=models.SET_NULL, related_name="revision_impacts",
+        null=True, blank=True, verbose_name="受影响处罚单元",
+    )
+    photo = models.ForeignKey(
+        EvidencePhoto, on_delete=models.SET_NULL, related_name="revision_impacts",
+        null=True, blank=True, verbose_name="受影响照片",
+    )
+    old_grid = models.ForeignKey(
+        RoadGrid, on_delete=models.SET_NULL, related_name="+", null=True, blank=True, verbose_name="原网格",
+    )
+    new_grid = models.ForeignKey(
+        RoadGrid, on_delete=models.SET_NULL, related_name="+", null=True, blank=True, verbose_name="新网格",
+    )
+    old_contract = models.ForeignKey(
+        CleaningContract, on_delete=models.SET_NULL, related_name="+", null=True, blank=True, verbose_name="原合同",
+    )
+    new_contract = models.ForeignKey(
+        CleaningContract, on_delete=models.SET_NULL, related_name="+", null=True, blank=True, verbose_name="新合同",
+    )
+    old_contract_code = models.CharField("原合同编号快照", max_length=32, blank=True, default="")
+    new_contract_code = models.CharField("新合同编号快照", max_length=32, blank=True, default="")
+    old_contractor_name = models.CharField("原承包商快照", max_length=128, blank=True, default="")
+    new_contractor_name = models.CharField("新承包商快照", max_length=128, blank=True, default="")
+    applied = models.BooleanField("是否已随发布生效", default=False)
+    applied_at = models.DateTimeField("生效时间", null=True, blank=True)
+    note = models.CharField("说明", max_length=512, blank=True)
+    created_at = models.DateTimeField("创建时间", auto_now_add=True)
+
+    class Meta:
+        verbose_name = "修订影响明细"
+        verbose_name_plural = verbose_name
+        ordering = ["revision_id", "id"]
+        indexes = [
+            models.Index(fields=["revision", "item_kind"]),
+            models.Index(fields=["penalty"]),
+            models.Index(fields=["event"]),
+        ]

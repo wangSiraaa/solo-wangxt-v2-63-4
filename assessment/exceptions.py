@@ -53,6 +53,36 @@ class PhotoAlreadyLinked(DomainError):
     default_detail = "照片已关联事件，不能重复立案"
 
 
+class RevisionConflict(DomainError):
+    status_code = 409
+    default_detail = "修订冲突（时空重叠 / 基准已漂移 / 重复提交 / 并发发布），发布被拒绝"
+
+
+class RevisionInvalid(DomainError):
+    status_code = 400
+    default_detail = "修订提案参数无效（有效时间区间非法等）"
+
+
+class RevisionNotDraft(DomainError):
+    status_code = 409
+    default_detail = "修订提案不在待确认状态，不能执行该操作"
+
+
+class RevisionUnresolvedImpact(DomainError):
+    status_code = 409
+    default_detail = "修订后存在无法归属的事件（责任区间断档或重叠），需先修正提案"
+
+
+class RevisionStale(DomainError):
+    status_code = 409
+    default_detail = "基准快照已漂移，请刷新影响预览后再确认"
+
+
+class RevisionDuplicateSubmission(DomainError):
+    status_code = 409
+    default_detail = "相同幂等键的修订提案已提交，请勿重复提交"
+
+
 def api_exception_handler(exc, context):
     """把 DomainError 转成 DRF 的标准错误响应体。"""
     from rest_framework.exceptions import APIException

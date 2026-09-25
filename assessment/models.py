@@ -30,11 +30,19 @@ def _new_id(prefix: str) -> str:
 
 
 class RoadGrid(gis.Model):
-    """道路网格（PostGIS 多边形，SRID 4326）。"""
+    """
+    道路网格（PostGIS 多边形，SRID 4326）。
+
+    effective_from/effective_to 为网格边界本身的有效时间（含起、不含止，
+    NULL 表示负无穷/正无穷）。历史数据默认为 NULL，归属行为与旧版完全一致。
+    网格边界登记错误时通过修订提案（RevisionProposal）更正，不直接覆盖历史。
+    """
 
     code = models.CharField("网格编号", max_length=32, unique=True)
     name = models.CharField("网格名称", max_length=128, blank=True)
     geom = gis.PolygonField("网格范围", srid=4326)
+    effective_from = models.DateTimeField("边界有效开始（含，NULL=最早）", null=True, blank=True)
+    effective_to = models.DateTimeField("边界有效结束（不含，NULL=最晚）", null=True, blank=True)
 
     class Meta:
         verbose_name = "道路网格"
@@ -257,6 +265,7 @@ class PenaltyVersion(models.Model):
         INITIAL = "initial", "初版立案"
         ESCALATION = "escalation", "逾期升级"
         CORRECTION = "correction", "人工更正"
+        ATTRIBUTION = "attribution", "追溯归属更正"
 
     penalty = models.ForeignKey(PenaltyUnit, on_delete=models.PROTECT, related_name="versions", verbose_name="处罚单元")
     version_no = models.PositiveIntegerField("版本号")
@@ -309,3 +318,275 @@ class ReviewRecord(models.Model):
         verbose_name = "复核记录"
         verbose_name_plural = verbose_name
         ordering = ["-reviewed_at"]
+
+
+# ============================================================================
+# 责任区 / 合同修订子系统
+#
+# 关键不变量：
+# * “按发生时归属”的历史不可直接覆盖；网格/合同每次发布都产生一行 append-only
+#   历史快照（GridHistory / ContractHistory），不做就地删除；
+# * 修订提案带“基准快照 + 有效时间”，提交即生成影响项（待确认调整），
+#   确认发布之前，任何事件/处罚的归属都不改变；
+# * 同一时空区间不得存在两个责任归属（网格不重叠；同网格合同区间不重叠）；
+# * 命中已锁定处罚时，原合同/承包商快照与已锁定版本指针保持不变，
+#   只追加 attribution 版本并进入待复核，同时写入 AttributionCorrection 审计链。
+# ============================================================================
+
+
+class GridHistory(models.Model):
+    """道路网格边界的 append-only 历史快照（每次发布一行，永不修改）。"""
+
+    grid = models.ForeignKey(RoadGrid, on_delete=models.PROTECT, related_name="history", verbose_name="道路网格")
+    code = models.CharField("网格编号快照", max_length=32)
+    name = models.CharField("网格名称快照", max_length=128, blank=True)
+    geom = gis.PolygonField("网格范围快照", srid=4326)
+    effective_from = models.DateTimeField("边界有效开始（含，NULL=最早）", null=True, blank=True)
+    effective_to = models.DateTimeField("边界有效结束（不含，NULL=最晚）", null=True, blank=True)
+    revision = models.ForeignKey(
+        "RevisionProposal", on_delete=models.PROTECT, related_name="grid_history_rows",
+        null=True, blank=True, verbose_name="发布该快照的修订（NULL=迁移基线）",
+    )
+    published_at = models.DateTimeField("发布时间", auto_now_add=True)
+
+    class Meta:
+        verbose_name = "网格历史快照"
+        verbose_name_plural = verbose_name
+        ordering = ["grid_id", "-published_at", "-id"]
+        indexes = [models.Index(fields=["grid", "effective_from", "effective_to"])]
+
+
+class ContractHistory(models.Model):
+    """保洁合同责任区间的 append-only 历史快照（每次发布一行，永不修改）。"""
+
+    contract = models.ForeignKey(
+        CleaningContract, on_delete=models.PROTECT, related_name="history", verbose_name="保洁合同",
+    )
+    grid = models.ForeignKey(RoadGrid, on_delete=models.PROTECT, related_name="contract_history_rows",
+                             verbose_name="网格快照")
+    code = models.CharField("合同编号快照", max_length=32)
+    contractor_name = models.CharField("承包商名称快照", max_length=128)
+    valid_from = models.DateTimeField("责任开始时间快照（含）")
+    valid_to = models.DateTimeField("责任结束时间快照（不含）")
+    revision = models.ForeignKey(
+        "RevisionProposal", on_delete=models.PROTECT, related_name="contract_history_rows",
+        null=True, blank=True, verbose_name="发布该快照的修订（NULL=迁移基线）",
+    )
+    published_at = models.DateTimeField("发布时间", auto_now_add=True)
+
+    class Meta:
+        verbose_name = "合同历史快照"
+        verbose_name_plural = verbose_name
+        ordering = ["contract_id", "-published_at", "-id"]
+        indexes = [models.Index(fields=["grid", "valid_from", "valid_to"])]
+
+
+class RevisionProposal(TimeStamped):
+    """
+    责任区 / 合同修订提案。
+
+    生命周期：draft →（confirm）→ published；draft 可 withdraw；
+    任何未发布提案都可用 replace 以新内容替代（旧提案 superseded、新提案继承影响项）。
+    提案携带基准快照（baseline_*）与目标内容、有效时间；发布时重新校验基准是否漂移
+    （乐观锁）与时空重叠，全部命中才在单事务内应用。
+    """
+
+    class Target(models.TextChoices):
+        GRID = "grid", "道路网格"
+        CONTRACT = "contract", "保洁合同"
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "待确认"
+        PUBLISHED = "published", "已发布"
+        WITHDRAWN = "withdrawn", "已撤回"
+        SUPERSEDED = "superseded", "已被替代"
+        REJECTED = "rejected", "校验拒绝"
+
+    proposal_no = models.CharField("提案编号", max_length=32, unique=True, editable=False)
+    status = models.CharField("状态", max_length=16, choices=Status.choices, default=Status.DRAFT, db_index=True)
+    target_type = models.CharField("修订对象类型", max_length=16, choices=Target.choices)
+    grid = models.ForeignKey(RoadGrid, on_delete=models.PROTECT, related_name="revision_proposals",
+                             verbose_name="目标/相关网格")
+    contract = models.ForeignKey(
+        CleaningContract, on_delete=models.PROTECT, related_name="revision_proposals",
+        null=True, blank=True, verbose_name="目标合同（合同修订）",
+    )
+    effective_from = models.DateTimeField("修订有效开始（含）", null=True, blank=True)
+    effective_to = models.DateTimeField("修订有效结束（不含）", null=True, blank=True)
+
+    reason = models.CharField("修订原因", max_length=512)
+    actor = models.CharField("提案人", max_length=64, blank=True, default="")
+    idempotency_key = models.CharField("幂等键", max_length=64, null=True, blank=True)
+
+    # ---- 合同修订内容（target_type=contract）----
+    new_contractor_name = models.CharField("修订后承包商", max_length=128, blank=True, default="")
+    new_valid_from = models.DateTimeField("修订后责任开始（含）", null=True, blank=True)
+    new_valid_to = models.DateTimeField("修订后责任结束（不含）", null=True, blank=True)
+    new_grid = models.ForeignKey(
+        RoadGrid, on_delete=models.PROTECT, related_name="incoming_contract_proposals",
+        null=True, blank=True, verbose_name="改挂网格（合同责任区迁移）",
+    )
+
+    # ---- 网格修订内容（target_type=grid）----
+    new_name = models.CharField("修订后网格名称", max_length=128, blank=True, default="")
+    new_geom = gis.PolygonField("修订后网格范围", srid=4326, null=True, blank=True)
+
+    # ---- 基准快照（乐观锁：发布时与当前值比对）----
+    baseline_grid_geom = gis.PolygonField("基准网格范围", srid=4326, null=True, blank=True)
+    baseline_grid_effective_from = models.DateTimeField("基准网格有效开始", null=True, blank=True)
+    baseline_grid_effective_to = models.DateTimeField("基准网格有效结束", null=True, blank=True)
+    baseline_contractor_name = models.CharField("基准承包商", max_length=128, blank=True, default="")
+    baseline_valid_from = models.DateTimeField("基准合同开始", null=True, blank=True)
+    baseline_valid_to = models.DateTimeField("基准合同结束", null=True, blank=True)
+    baseline_grid_id = models.BigIntegerField("基准合同所属网格ID", null=True, blank=True)
+
+    published_at = models.DateTimeField("发布时间", null=True, blank=True)
+    published_by = models.CharField("发布人", max_length=64, blank=True, default="")
+    withdrawn_at = models.DateTimeField("撤回时间", null=True, blank=True)
+    superseded_by = models.ForeignKey(
+        "self", on_delete=models.PROTECT, related_name="supersedes",
+        null=True, blank=True, verbose_name="替代本提案的新提案",
+    )
+    reject_reason = models.CharField("拒绝原因", max_length=512, blank=True, default="")
+
+    class Meta:
+        verbose_name = "修订提案"
+        verbose_name_plural = verbose_name
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["idempotency_key"],
+                condition=models.Q(idempotency_key__isnull=False),
+                name="uniq_revision_idempotency_key",
+            ),
+            # 同一目标只允许一个进行中（draft）提案，防止重复提交产生两套待确认调整
+            models.UniqueConstraint(
+                fields=["contract"],
+                condition=models.Q(target_type="contract", status="draft"),
+                name="uniq_draft_contract_revision",
+            ),
+            models.UniqueConstraint(
+                fields=["grid"],
+                condition=models.Q(target_type="grid", status="draft"),
+                name="uniq_draft_grid_revision",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["target_type", "status"]),
+            models.Index(fields=["grid", "status"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self.proposal_no:
+            self.proposal_no = _new_id("RP")
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.proposal_no} {self.target_type} {self.status}"
+
+
+class RevisionImpactItem(models.Model):
+    """
+    修订影响项 = “待确认调整”的载体：提案创建/刷新时计算并持久化，
+    在提案发布之前，不改变任何事件/处罚的归属。
+
+    发布时按 disposition 精确应用：
+    * unlocked_attribution —— 改挂未锁定事件/处罚的归属（追加审计行）；
+    * locked_correction    —— 已锁定处罚：原快照不动，追加 attribution 版本复核，
+                             并生成 AttributionCorrection；
+    * unresolved           —— 修订后区间内解析不到/有多个责任归属（断档或重叠），
+                             属于硬冲突，提案不允许确认；
+    * future               —— 事件发生在有效时间之后，修订只影响新事件，历史不动。
+    """
+
+    class Disposition(models.TextChoices):
+        UNLOCKED_ATTRIBUTION = "unlocked_attribution", "未锁定：确认后改挂归属"
+        LOCKED_CORRECTION = "locked_correction", "已锁定：追加更正/复核"
+        UNRESOLVED = "unresolved", "无法解析（断档/重叠）"
+        FUTURE = "future", "未来事件，本次不调整"
+        PHOTO_ONLY = "photo_only", "仅关联照片（信息项）"
+
+    class State(models.TextChoices):
+        PENDING = "pending", "待确认"
+        APPLIED = "applied", "已应用"
+        SKIPPED = "skipped", "已跳过"
+
+    proposal = models.ForeignKey(RevisionProposal, on_delete=models.PROTECT, related_name="impact_items",
+                                 verbose_name="修订提案")
+    event = models.ForeignKey(
+        ProblemEvent, on_delete=models.PROTECT, related_name="revision_impacts",
+        null=True, blank=True, verbose_name="受影响事件",
+    )
+    photo = models.ForeignKey(
+        EvidencePhoto, on_delete=models.PROTECT, related_name="revision_impacts",
+        null=True, blank=True, verbose_name="受影响照片",
+    )
+    penalty = models.ForeignKey(
+        PenaltyUnit, on_delete=models.PROTECT, related_name="revision_impacts",
+        null=True, blank=True, verbose_name="受影响处罚",
+    )
+
+    disposition = models.CharField("处置类型", max_length=24, choices=Disposition.choices)
+    state = models.CharField("处理状态", max_length=16, choices=State.choices, default=State.PENDING)
+
+    from_contract = models.ForeignKey(
+        CleaningContract, on_delete=models.PROTECT, related_name="impact_items_from",
+        null=True, blank=True, verbose_name="修订前归属合同",
+    )
+    from_contractor_name = models.CharField("修订前承包商", max_length=128, blank=True, default="")
+    to_contract = models.ForeignKey(
+        CleaningContract, on_delete=models.PROTECT, related_name="impact_items_to",
+        null=True, blank=True, verbose_name="修订后归属合同",
+    )
+    to_contractor_name = models.CharField("修订后承包商", max_length=128, blank=True, default="")
+    from_grid = models.ForeignKey(RoadGrid, on_delete=models.PROTECT, related_name="impact_items_from_grid",
+                                  null=True, blank=True, verbose_name="修订前网格")
+    to_grid = models.ForeignKey(RoadGrid, on_delete=models.PROTECT, related_name="impact_items_to_grid",
+                                null=True, blank=True, verbose_name="修订后网格")
+    note = models.CharField("说明", max_length=512, blank=True, default="")
+
+    class Meta:
+        verbose_name = "修订影响项"
+        verbose_name_plural = verbose_name
+        ordering = ["id"]
+        indexes = [
+            models.Index(fields=["proposal", "disposition"]),
+            models.Index(fields=["state"]),
+        ]
+
+    def __str__(self):
+        return f"{self.proposal_id}:{self.disposition}:{self.state}"
+
+
+class AttributionCorrection(models.Model):
+    """
+    命中已锁定处罚的归属更正审计链：
+    原 PenaltyUnit.contract / contractor_name 与 locked_version 永不改变，
+    只追加一个 attribution 版本（进入待复核），本行记录其与修订提案的因果链。
+    """
+
+    proposal = models.ForeignKey(RevisionProposal, on_delete=models.PROTECT,
+                                 related_name="attribution_corrections", verbose_name="修订提案")
+    impact_item = models.ForeignKey(RevisionImpactItem, on_delete=models.PROTECT,
+                                    related_name="attribution_corrections", verbose_name="影响项")
+    penalty = models.ForeignKey(PenaltyUnit, on_delete=models.PROTECT,
+                                related_name="attribution_corrections", verbose_name="处罚单元")
+    version = models.ForeignKey(PenaltyVersion, on_delete=models.PROTECT,
+                                related_name="attribution_corrections", verbose_name="追加的归属版本")
+    from_contract = models.ForeignKey(
+        CleaningContract, on_delete=models.PROTECT, related_name="attribution_corrections_from",
+        null=True, blank=True, verbose_name="更正前合同（保留）",
+    )
+    from_contractor_name = models.CharField("更正前承包商（保留快照）", max_length=128)
+    to_contract = models.ForeignKey(
+        CleaningContract, on_delete=models.PROTECT, related_name="attribution_corrections_to",
+        null=True, blank=True, verbose_name="应归合同",
+    )
+    to_contractor_name = models.CharField("应归承包商", max_length=128)
+    actor = models.CharField("操作人", max_length=64, blank=True, default="")
+    created_at = models.DateTimeField("创建时间", auto_now_add=True)
+
+    class Meta:
+        verbose_name = "归属更正审计"
+        verbose_name_plural = verbose_name
+        ordering = ["-id"]

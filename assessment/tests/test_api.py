@@ -305,7 +305,12 @@ class AssessmentFlowTests(APITestCase):
         schema = json.loads(resp.content)
         self.assertEqual(schema["openapi"].split(".")[0], "3")
         for path in ["/api/photos/", "/api/events/", "/api/penalties/",
-                     "/api/candidates/{id}/decide/", "/api/escalations/run/"]:
+                     "/api/candidates/{id}/decide/", "/api/escalations/run/",
+                     "/api/revisions/", "/api/revisions/{id}/confirm/",
+                     "/api/revisions/contracts/{contract_id}/propose/",
+                     "/api/revisions/grids/{grid_id}/preview/",
+                     "/api/grid-history/", "/api/contract-history/",
+                     "/api/attribution-corrections/", "/api/revision-impacts/"]:
             self.assertIn(path, schema["paths"], path)
 
 

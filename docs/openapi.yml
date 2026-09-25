@@ -10,8 +10,66 @@ info:
     * 同一问题不同角度拍摄只计扣一次（照片挂接到已有事件）；
     * 已整改后同一位置复发 = 新事件、新处罚；
     * 扣分归属按**事件发生时**的合同责任区间，与录入时间无关；
-    * 逾期升级基于可注入时钟；复核通过锁定处罚版本，更正只能追加新版本。
+    * 逾期升级基于可注入时钟；复核通过锁定处罚版本，更正只能追加新版本；
+    * 网格/合同登记错误通过**修订提案**追溯更正：带基准快照与有效时间，经冲突校验、影响预览、确认发布；历史 append-only，不覆盖按发生时归属；
+    * 同一时空区间不得有两个责任归属；命中未锁定事件确认后才改挂，命中已锁定处罚保留原快照并追加 attribution 版本+审计链。
 paths:
+  /api/attribution-corrections/:
+    get:
+      operationId: attribution_corrections_list
+      description: 命中锁定处罚的归属更正审计链（只读）。
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: 分页结果集中的页码。
+        schema:
+          type: integer
+      - in: query
+        name: penalty
+        schema:
+          type: integer
+      - in: query
+        name: proposal
+        schema:
+          type: integer
+      tags:
+      - attribution-corrections
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedAttributionCorrectionList'
+          description: ''
+  /api/attribution-corrections/{id}/:
+    get:
+      operationId: attribution_corrections_retrieve
+      description: 命中锁定处罚的归属更正审计链（只读）。
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: 标识此 归属更正审计 的 唯一整数值。
+        required: true
+      tags:
+      - attribution-corrections
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttributionCorrection'
+          description: ''
   /api/candidates/:
     get:
       operationId: candidates_list
@@ -123,6 +181,66 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DuplicateCandidate'
+          description: ''
+  /api/contract-history/:
+    get:
+      operationId: contract_history_list
+      description: 合同责任区间 append-only 历史快照（只读）。
+      parameters:
+      - in: query
+        name: contract
+        schema:
+          type: integer
+      - in: query
+        name: grid
+        schema:
+          type: integer
+      - name: page
+        required: false
+        in: query
+        description: 分页结果集中的页码。
+        schema:
+          type: integer
+      - in: query
+        name: revision
+        schema:
+          type: integer
+      tags:
+      - contract-history
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedContractHistoryList'
+          description: ''
+  /api/contract-history/{id}/:
+    get:
+      operationId: contract_history_retrieve
+      description: 合同责任区间 append-only 历史快照（只读）。
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: 标识此 合同历史快照 的 唯一整数值。
+        required: true
+      tags:
+      - contract-history
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractHistory'
           description: ''
   /api/contracts/:
     get:
@@ -506,6 +624,62 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProblemEvent'
           description: ''
+  /api/grid-history/:
+    get:
+      operationId: grid_history_list
+      description: 网格边界 append-only 历史快照（只读）。
+      parameters:
+      - in: query
+        name: grid
+        schema:
+          type: integer
+      - name: page
+        required: false
+        in: query
+        description: 分页结果集中的页码。
+        schema:
+          type: integer
+      - in: query
+        name: revision
+        schema:
+          type: integer
+      tags:
+      - grid-history
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedRoadGridHistoryList'
+          description: ''
+  /api/grid-history/{id}/:
+    get:
+      operationId: grid_history_retrieve
+      description: 网格边界 append-only 历史快照（只读）。
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: 标识此 网格历史快照 的 唯一整数值。
+        required: true
+      tags:
+      - grid-history
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoadGridHistory'
+          description: ''
   /api/grids/:
     get:
       operationId: grids_list
@@ -826,6 +1000,7 @@ paths:
           type: string
           title: 版本类型
           enum:
+          - attribution
           - correction
           - escalation
           - initial
@@ -833,6 +1008,7 @@ paths:
           * `initial` - 初版立案
           * `escalation` - 逾期升级
           * `correction` - 人工更正
+          * `attribution` - 追溯归属更正
       - name: page
         required: false
         in: query
@@ -1048,6 +1224,561 @@ paths:
               schema:
                 $ref: '#/components/schemas/RectificationRead'
           description: ''
+  /api/revision-impacts/:
+    get:
+      operationId: revision_impacts_list
+      description: 修订影响项（待确认调整）只读检索。
+      parameters:
+      - in: query
+        name: disposition
+        schema:
+          type: string
+          title: 处置类型
+          enum:
+          - future
+          - locked_correction
+          - photo_only
+          - unlocked_attribution
+          - unresolved
+        description: |-
+          * `unlocked_attribution` - 未锁定：确认后改挂归属
+          * `locked_correction` - 已锁定：追加更正/复核
+          * `unresolved` - 无法解析（断档/重叠）
+          * `future` - 未来事件，本次不调整
+          * `photo_only` - 仅关联照片（信息项）
+      - in: query
+        name: event
+        schema:
+          type: integer
+      - name: page
+        required: false
+        in: query
+        description: 分页结果集中的页码。
+        schema:
+          type: integer
+      - in: query
+        name: penalty
+        schema:
+          type: integer
+      - in: query
+        name: photo
+        schema:
+          type: integer
+      - in: query
+        name: proposal
+        schema:
+          type: integer
+      - in: query
+        name: state
+        schema:
+          type: string
+          title: 处理状态
+          enum:
+          - applied
+          - pending
+          - skipped
+        description: |-
+          * `pending` - 待确认
+          * `applied` - 已应用
+          * `skipped` - 已跳过
+      tags:
+      - revision-impacts
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedRevisionImpactItemList'
+          description: ''
+  /api/revision-impacts/{id}/:
+    get:
+      operationId: revision_impacts_retrieve
+      description: 修订影响项（待确认调整）只读检索。
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: 标识此 修订影响项 的 唯一整数值。
+        required: true
+      tags:
+      - revision-impacts
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevisionImpactItem'
+          description: ''
+  /api/revisions/:
+    get:
+      operationId: revisions_list
+      description: |-
+        责任区 / 合同修订提案。
+
+        * POST /api/revisions/contracts/{contract_id}/propose/  合同修订提案
+        * POST /api/revisions/grids/{grid_id}/propose/          网格边界修订提案
+        * POST /api/revisions/contracts/{contract_id}/preview/  无状态合同影响预览
+        * POST /api/revisions/grids/{grid_id}/preview/          无状态网格影响预览
+        * POST /api/revisions/{id}/confirm/                     确认发布（单事务）
+        * POST /api/revisions/{id}/withdraw/                    撤回
+        * POST /api/revisions/{id}/replace/                     以新内容替代
+        * POST /api/revisions/{id}/refresh/                     刷新影响（基准漂移恢复）
+      parameters:
+      - in: query
+        name: contract
+        schema:
+          type: integer
+      - in: query
+        name: grid
+        schema:
+          type: integer
+      - name: page
+        required: false
+        in: query
+        description: 分页结果集中的页码。
+        schema:
+          type: integer
+      - in: query
+        name: status
+        schema:
+          type: string
+          title: 状态
+          enum:
+          - draft
+          - published
+          - rejected
+          - superseded
+          - withdrawn
+        description: |-
+          * `draft` - 待确认
+          * `published` - 已发布
+          * `withdrawn` - 已撤回
+          * `superseded` - 已被替代
+          * `rejected` - 校验拒绝
+      - in: query
+        name: target_type
+        schema:
+          type: string
+          title: 修订对象类型
+          enum:
+          - contract
+          - grid
+        description: |-
+          * `grid` - 道路网格
+          * `contract` - 保洁合同
+      tags:
+      - revisions
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedRevisionProposalList'
+          description: ''
+    post:
+      operationId: revisions_create
+      description: |-
+        责任区 / 合同修订提案。
+
+        * POST /api/revisions/contracts/{contract_id}/propose/  合同修订提案
+        * POST /api/revisions/grids/{grid_id}/propose/          网格边界修订提案
+        * POST /api/revisions/contracts/{contract_id}/preview/  无状态合同影响预览
+        * POST /api/revisions/grids/{grid_id}/preview/          无状态网格影响预览
+        * POST /api/revisions/{id}/confirm/                     确认发布（单事务）
+        * POST /api/revisions/{id}/withdraw/                    撤回
+        * POST /api/revisions/{id}/replace/                     以新内容替代
+        * POST /api/revisions/{id}/refresh/                     刷新影响（基准漂移恢复）
+      tags:
+      - revisions
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevisionProposal'
+          description: ''
+  /api/revisions/{id}/:
+    get:
+      operationId: revisions_retrieve
+      description: |-
+        责任区 / 合同修订提案。
+
+        * POST /api/revisions/contracts/{contract_id}/propose/  合同修订提案
+        * POST /api/revisions/grids/{grid_id}/propose/          网格边界修订提案
+        * POST /api/revisions/contracts/{contract_id}/preview/  无状态合同影响预览
+        * POST /api/revisions/grids/{grid_id}/preview/          无状态网格影响预览
+        * POST /api/revisions/{id}/confirm/                     确认发布（单事务）
+        * POST /api/revisions/{id}/withdraw/                    撤回
+        * POST /api/revisions/{id}/replace/                     以新内容替代
+        * POST /api/revisions/{id}/refresh/                     刷新影响（基准漂移恢复）
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: 标识此 修订提案 的 唯一整数值。
+        required: true
+      tags:
+      - revisions
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevisionProposal'
+          description: ''
+  /api/revisions/{id}/confirm/:
+    post:
+      operationId: revisions_confirm_create
+      description: 确认发布：重新冲突校验 + 基准乐观锁，全部命中后单事务应用。
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: 标识此 修订提案 的 唯一整数值。
+        required: true
+      tags:
+      - revisions
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevisionProposal'
+          description: ''
+  /api/revisions/{id}/refresh/:
+    post:
+      operationId: revisions_refresh_create
+      description: 基准漂移后刷新影响（重新计算待确认调整，不改归属）。
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: 标识此 修订提案 的 唯一整数值。
+        required: true
+      tags:
+      - revisions
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevisionProposal'
+          description: ''
+  /api/revisions/{id}/replace/:
+    post:
+      operationId: revisions_replace_create
+      description: 以新内容替代未发布提案：旧提案 superseded，新提案重新计算影响。
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: 标识此 修订提案 的 唯一整数值。
+        required: true
+      tags:
+      - revisions
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevisionProposal'
+          description: ''
+  /api/revisions/{id}/withdraw/:
+    post:
+      operationId: revisions_withdraw_create
+      description: 撤回待确认提案（待确认调整随提案作废，不改任何归属）。
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: 标识此 修订提案 的 唯一整数值。
+        required: true
+      tags:
+      - revisions
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevisionProposal'
+          description: ''
+  /api/revisions/contracts/{contract_id}/preview/:
+    post:
+      operationId: revisions_contracts_preview_create
+      description: |-
+        责任区 / 合同修订提案。
+
+        * POST /api/revisions/contracts/{contract_id}/propose/  合同修订提案
+        * POST /api/revisions/grids/{grid_id}/propose/          网格边界修订提案
+        * POST /api/revisions/contracts/{contract_id}/preview/  无状态合同影响预览
+        * POST /api/revisions/grids/{grid_id}/preview/          无状态网格影响预览
+        * POST /api/revisions/{id}/confirm/                     确认发布（单事务）
+        * POST /api/revisions/{id}/withdraw/                    撤回
+        * POST /api/revisions/{id}/replace/                     以新内容替代
+        * POST /api/revisions/{id}/refresh/                     刷新影响（基准漂移恢复）
+      parameters:
+      - in: path
+        name: contract_id
+        schema:
+          type: string
+          pattern: ^[0-9]+$
+        required: true
+      tags:
+      - revisions
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevisionProposal'
+          description: ''
+  /api/revisions/contracts/{contract_id}/propose/:
+    post:
+      operationId: revisions_contracts_propose_create
+      description: |-
+        责任区 / 合同修订提案。
+
+        * POST /api/revisions/contracts/{contract_id}/propose/  合同修订提案
+        * POST /api/revisions/grids/{grid_id}/propose/          网格边界修订提案
+        * POST /api/revisions/contracts/{contract_id}/preview/  无状态合同影响预览
+        * POST /api/revisions/grids/{grid_id}/preview/          无状态网格影响预览
+        * POST /api/revisions/{id}/confirm/                     确认发布（单事务）
+        * POST /api/revisions/{id}/withdraw/                    撤回
+        * POST /api/revisions/{id}/replace/                     以新内容替代
+        * POST /api/revisions/{id}/refresh/                     刷新影响（基准漂移恢复）
+      parameters:
+      - in: path
+        name: contract_id
+        schema:
+          type: string
+          pattern: ^[0-9]+$
+        required: true
+      tags:
+      - revisions
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevisionProposal'
+          description: ''
+  /api/revisions/grids/{grid_id}/preview/:
+    post:
+      operationId: revisions_grids_preview_create
+      description: |-
+        责任区 / 合同修订提案。
+
+        * POST /api/revisions/contracts/{contract_id}/propose/  合同修订提案
+        * POST /api/revisions/grids/{grid_id}/propose/          网格边界修订提案
+        * POST /api/revisions/contracts/{contract_id}/preview/  无状态合同影响预览
+        * POST /api/revisions/grids/{grid_id}/preview/          无状态网格影响预览
+        * POST /api/revisions/{id}/confirm/                     确认发布（单事务）
+        * POST /api/revisions/{id}/withdraw/                    撤回
+        * POST /api/revisions/{id}/replace/                     以新内容替代
+        * POST /api/revisions/{id}/refresh/                     刷新影响（基准漂移恢复）
+      parameters:
+      - in: path
+        name: grid_id
+        schema:
+          type: string
+          pattern: ^[0-9]+$
+        required: true
+      tags:
+      - revisions
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevisionProposal'
+          description: ''
+  /api/revisions/grids/{grid_id}/propose/:
+    post:
+      operationId: revisions_grids_propose_create
+      description: |-
+        责任区 / 合同修订提案。
+
+        * POST /api/revisions/contracts/{contract_id}/propose/  合同修订提案
+        * POST /api/revisions/grids/{grid_id}/propose/          网格边界修订提案
+        * POST /api/revisions/contracts/{contract_id}/preview/  无状态合同影响预览
+        * POST /api/revisions/grids/{grid_id}/preview/          无状态网格影响预览
+        * POST /api/revisions/{id}/confirm/                     确认发布（单事务）
+        * POST /api/revisions/{id}/withdraw/                    撤回
+        * POST /api/revisions/{id}/replace/                     以新内容替代
+        * POST /api/revisions/{id}/refresh/                     刷新影响（基准漂移恢复）
+      parameters:
+      - in: path
+        name: grid_id
+        schema:
+          type: string
+          pattern: ^[0-9]+$
+        required: true
+      tags:
+      - revisions
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RevisionProposal'
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevisionProposal'
+          description: ''
   /api/schema/:
     get:
       operationId: schema_retrieve
@@ -1195,6 +1926,67 @@ paths:
           description: ''
 components:
   schemas:
+    AttributionCorrection:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        proposal:
+          type: integer
+          readOnly: true
+          title: 修订提案
+        impact_item:
+          type: integer
+          readOnly: true
+          title: 影响项
+        penalty:
+          type: integer
+          readOnly: true
+          title: 处罚单元
+        version:
+          type: integer
+          readOnly: true
+          title: 追加的归属版本
+        from_contract:
+          type: integer
+          readOnly: true
+          nullable: true
+          title: 更正前合同（保留）
+        from_contractor_name:
+          type: string
+          readOnly: true
+          title: 更正前承包商（保留快照）
+        to_contract:
+          type: integer
+          readOnly: true
+          nullable: true
+          title: 应归合同
+        to_contractor_name:
+          type: string
+          readOnly: true
+          title: 应归承包商
+        actor:
+          type: string
+          readOnly: true
+          title: 操作人
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+          title: 创建时间
+      required:
+      - actor
+      - created_at
+      - from_contract
+      - from_contractor_name
+      - id
+      - impact_item
+      - penalty
+      - proposal
+      - to_contract
+      - to_contractor_name
+      - version
     CandidateStatusEnum:
       enum:
       - pending
@@ -1245,6 +2037,58 @@ components:
       - created_at
       - grid
       - id
+      - valid_from
+      - valid_to
+    ContractHistory:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        contract:
+          type: integer
+          readOnly: true
+          title: 保洁合同
+        grid:
+          type: integer
+          readOnly: true
+          title: 网格快照
+        code:
+          type: string
+          readOnly: true
+          title: 合同编号快照
+        contractor_name:
+          type: string
+          readOnly: true
+          title: 承包商名称快照
+        valid_from:
+          type: string
+          format: date-time
+          readOnly: true
+          title: 责任开始时间快照（含）
+        valid_to:
+          type: string
+          format: date-time
+          readOnly: true
+          title: 责任结束时间快照（不含）
+        revision:
+          type: integer
+          readOnly: true
+          nullable: true
+          title: 发布该快照的修订（NULL=迁移基线）
+        published_at:
+          type: string
+          format: date-time
+          readOnly: true
+          title: 发布时间
+      required:
+      - code
+      - contract
+      - contractor_name
+      - grid
+      - id
+      - published_at
+      - revision
       - valid_from
       - valid_to
     DuplicateCandidate:
@@ -1489,6 +2333,29 @@ components:
       - lng
       - location
       - phash
+    PaginatedAttributionCorrectionList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/AttributionCorrection'
     PaginatedCleaningContractList:
       type: object
       required:
@@ -1512,6 +2379,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CleaningContract'
+    PaginatedContractHistoryList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContractHistory'
     PaginatedDuplicateCandidateList:
       type: object
       required:
@@ -1673,6 +2563,75 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/RectificationRead'
+    PaginatedRevisionImpactItemList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/RevisionImpactItem'
+    PaginatedRevisionProposalList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/RevisionProposal'
+    PaginatedRoadGridHistoryList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoadGridHistory'
     PaginatedRoadGridList:
       type: object
       required:
@@ -1852,12 +2811,18 @@ components:
           items:
             $ref: '#/components/schemas/ReviewRecord'
           readOnly: true
+        attribution_corrections:
+          type: array
+          items:
+            $ref: '#/components/schemas/AttributionCorrection'
+          readOnly: true
         created_at:
           type: string
           format: date-time
           readOnly: true
           title: 创建时间
       required:
+      - attribution_corrections
       - contract
       - contractor_name
       - created_at
@@ -1929,11 +2894,13 @@ components:
       - initial
       - escalation
       - correction
+      - attribution
       type: string
       description: |-
         * `initial` - 初版立案
         * `escalation` - 逾期升级
         * `correction` - 人工更正
+        * `attribution` - 追溯归属更正
     PhotoBrief:
       type: object
       properties:
@@ -2167,6 +3134,429 @@ components:
       - reviewed_at
       - reviewer
       - version
+    RevisionDispositionEnum:
+      enum:
+      - unlocked_attribution
+      - locked_correction
+      - unresolved
+      - future
+      - photo_only
+      type: string
+      description: |-
+        * `unlocked_attribution` - 未锁定：确认后改挂归属
+        * `locked_correction` - 已锁定：追加更正/复核
+        * `unresolved` - 无法解析（断档/重叠）
+        * `future` - 未来事件，本次不调整
+        * `photo_only` - 仅关联照片（信息项）
+    RevisionImpactItem:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        proposal:
+          type: integer
+          readOnly: true
+          title: 修订提案
+        event:
+          type: integer
+          readOnly: true
+          nullable: true
+          title: 受影响事件
+        photo:
+          type: integer
+          readOnly: true
+          nullable: true
+          title: 受影响照片
+        penalty:
+          type: integer
+          readOnly: true
+          nullable: true
+          title: 受影响处罚
+        disposition:
+          allOf:
+          - $ref: '#/components/schemas/RevisionDispositionEnum'
+          readOnly: true
+          title: 处置类型
+        disposition_display:
+          type: string
+          readOnly: true
+        state:
+          allOf:
+          - $ref: '#/components/schemas/RevisionImpactStateEnum'
+          readOnly: true
+          title: 处理状态
+        state_display:
+          type: string
+          readOnly: true
+        from_contract:
+          type: integer
+          readOnly: true
+          nullable: true
+          title: 修订前归属合同
+        from_contractor_name:
+          type: string
+          readOnly: true
+          title: 修订前承包商
+        to_contract:
+          type: integer
+          readOnly: true
+          nullable: true
+          title: 修订后归属合同
+        to_contractor_name:
+          type: string
+          readOnly: true
+          title: 修订后承包商
+        from_grid:
+          type: integer
+          readOnly: true
+          nullable: true
+          title: 修订前网格
+        to_grid:
+          type: integer
+          readOnly: true
+          nullable: true
+          title: 修订后网格
+        note:
+          type: string
+          readOnly: true
+          title: 说明
+      required:
+      - disposition
+      - disposition_display
+      - event
+      - from_contract
+      - from_contractor_name
+      - from_grid
+      - id
+      - note
+      - penalty
+      - photo
+      - proposal
+      - state
+      - state_display
+      - to_contract
+      - to_contractor_name
+      - to_grid
+    RevisionImpactStateEnum:
+      enum:
+      - pending
+      - applied
+      - skipped
+      type: string
+      description: |-
+        * `pending` - 待确认
+        * `applied` - 已应用
+        * `skipped` - 已跳过
+    RevisionProposal:
+      type: object
+      description: 修订提案读取（含基准快照、影响项、归属更正审计链）。
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        proposal_no:
+          type: string
+          readOnly: true
+          title: 提案编号
+        status:
+          allOf:
+          - $ref: '#/components/schemas/RevisionStatusEnum'
+          readOnly: true
+          title: 状态
+        status_display:
+          type: string
+          readOnly: true
+        target_type:
+          allOf:
+          - $ref: '#/components/schemas/RevisionTargetEnum'
+          readOnly: true
+          title: 修订对象类型
+        target_type_display:
+          type: string
+          readOnly: true
+        grid:
+          type: integer
+          readOnly: true
+          title: 目标/相关网格
+        contract:
+          type: integer
+          readOnly: true
+          nullable: true
+          title: 目标合同（合同修订）
+        new_grid:
+          type: integer
+          readOnly: true
+          nullable: true
+          title: 改挂网格（合同责任区迁移）
+        effective_from:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+          title: 修订有效开始（含）
+        effective_to:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+          title: 修订有效结束（不含）
+        new_contractor_name:
+          type: string
+          readOnly: true
+          title: 修订后承包商
+        new_valid_from:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+          title: 修订后责任开始（含）
+        new_valid_to:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+          title: 修订后责任结束（不含）
+        new_name:
+          type: string
+          readOnly: true
+          title: 修订后网格名称
+        new_geom:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+              - Polygon
+            coordinates:
+              type: array
+              items:
+                type: array
+                items:
+                  type: array
+                  items:
+                    type: number
+                    format: float
+                  example:
+                  - 12.9721
+                  - 77.5933
+                  minItems: 2
+                  maxItems: 3
+                example:
+                - - 22.4707
+                  - 70.0577
+                - - 12.9721
+                  - 77.5933
+                minItems: 4
+              example:
+              - - - 0.0
+                  - 0.0
+                - - 0.0
+                  - 50.0
+                - - 50.0
+                  - 50.0
+                - - 50.0
+                  - 0.0
+                - - 0.0
+                  - 0.0
+          readOnly: true
+          nullable: true
+          title: 修订后网格范围
+        baseline_grid_geom:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+              - Polygon
+            coordinates:
+              type: array
+              items:
+                type: array
+                items:
+                  type: array
+                  items:
+                    type: number
+                    format: float
+                  example:
+                  - 12.9721
+                  - 77.5933
+                  minItems: 2
+                  maxItems: 3
+                example:
+                - - 22.4707
+                  - 70.0577
+                - - 12.9721
+                  - 77.5933
+                minItems: 4
+              example:
+              - - - 0.0
+                  - 0.0
+                - - 0.0
+                  - 50.0
+                - - 50.0
+                  - 50.0
+                - - 50.0
+                  - 0.0
+                - - 0.0
+                  - 0.0
+          readOnly: true
+          nullable: true
+          title: 基准网格范围
+        baseline_grid_effective_from:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+          title: 基准网格有效开始
+        baseline_grid_effective_to:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+          title: 基准网格有效结束
+        baseline_contractor_name:
+          type: string
+          readOnly: true
+          title: 基准承包商
+        baseline_valid_from:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+          title: 基准合同开始
+        baseline_valid_to:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+          title: 基准合同结束
+        baseline_grid_id:
+          type: integer
+          readOnly: true
+          nullable: true
+          title: 基准合同所属网格ID
+        reason:
+          type: string
+          readOnly: true
+          title: 修订原因
+        actor:
+          type: string
+          readOnly: true
+          title: 提案人
+        idempotency_key:
+          type: string
+          readOnly: true
+          nullable: true
+          title: 幂等键
+        reject_reason:
+          type: string
+          readOnly: true
+          title: 拒绝原因
+        published_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+          title: 发布时间
+        published_by:
+          type: string
+          readOnly: true
+          title: 发布人
+        withdrawn_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+          title: 撤回时间
+        superseded_by:
+          type: integer
+          readOnly: true
+          nullable: true
+          title: 替代本提案的新提案
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+          title: 创建时间
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+          title: 更新时间
+        impact_summary:
+          type: object
+          additionalProperties: {}
+          readOnly: true
+        impact_items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RevisionImpactItem'
+          readOnly: true
+        attribution_corrections:
+          type: array
+          items:
+            $ref: '#/components/schemas/AttributionCorrection'
+          readOnly: true
+      required:
+      - actor
+      - attribution_corrections
+      - baseline_contractor_name
+      - baseline_grid_effective_from
+      - baseline_grid_effective_to
+      - baseline_grid_geom
+      - baseline_grid_id
+      - baseline_valid_from
+      - baseline_valid_to
+      - contract
+      - created_at
+      - effective_from
+      - effective_to
+      - grid
+      - id
+      - idempotency_key
+      - impact_items
+      - impact_summary
+      - new_contractor_name
+      - new_geom
+      - new_grid
+      - new_name
+      - new_valid_from
+      - new_valid_to
+      - proposal_no
+      - published_at
+      - published_by
+      - reason
+      - reject_reason
+      - status
+      - status_display
+      - superseded_by
+      - target_type
+      - target_type_display
+      - updated_at
+      - withdrawn_at
+    RevisionStatusEnum:
+      enum:
+      - draft
+      - published
+      - withdrawn
+      - superseded
+      - rejected
+      type: string
+      description: |-
+        * `draft` - 待确认
+        * `published` - 已发布
+        * `withdrawn` - 已撤回
+        * `superseded` - 已被替代
+        * `rejected` - 校验拒绝
+    RevisionTargetEnum:
+      enum:
+      - grid
+      - contract
+      type: string
+      description: |-
+        * `grid` - 道路网格
+        * `contract` - 保洁合同
     RoadGrid:
       type: object
       description: 道路网格；geom 为 GeoJSON Polygon（EPSG:4326）。
@@ -2224,6 +3614,96 @@ components:
       - code
       - geom
       - id
+    RoadGridHistory:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        grid:
+          type: integer
+          readOnly: true
+          title: 道路网格
+        code:
+          type: string
+          readOnly: true
+          title: 网格编号快照
+        name:
+          type: string
+          readOnly: true
+          title: 网格名称快照
+        geom:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+              - Polygon
+            coordinates:
+              type: array
+              items:
+                type: array
+                items:
+                  type: array
+                  items:
+                    type: number
+                    format: float
+                  example:
+                  - 12.9721
+                  - 77.5933
+                  minItems: 2
+                  maxItems: 3
+                example:
+                - - 22.4707
+                  - 70.0577
+                - - 12.9721
+                  - 77.5933
+                minItems: 4
+              example:
+              - - - 0.0
+                  - 0.0
+                - - 0.0
+                  - 50.0
+                - - 50.0
+                  - 50.0
+                - - 50.0
+                  - 0.0
+                - - 0.0
+                  - 0.0
+          readOnly: true
+          title: 网格范围快照
+        effective_from:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+          title: 边界有效开始（含，NULL=最早）
+        effective_to:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+          title: 边界有效结束（不含，NULL=最晚）
+        revision:
+          type: integer
+          readOnly: true
+          nullable: true
+          title: 发布该快照的修订（NULL=迁移基线）
+        published_at:
+          type: string
+          format: date-time
+          readOnly: true
+          title: 发布时间
+      required:
+      - code
+      - effective_from
+      - effective_to
+      - geom
+      - grid
+      - id
+      - name
+      - published_at
+      - revision
   securitySchemes:
     basicAuth:
       type: http

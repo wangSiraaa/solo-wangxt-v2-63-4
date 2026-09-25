@@ -101,6 +101,29 @@ def correct_penalty(
 
 
 @transaction.atomic
+def append_attribution_version(
+    penalty: PenaltyUnit,
+    *,
+    reason: str,
+    actor: str,
+) -> PenaltyVersion:
+    """
+    追溯归属更正（命中已锁定处罚）：
+    扣分与逾期等级不变，只把归属变更作为新版本追加（kind=attribution），
+    处罚回到待复核；PenaltyUnit.contract / contractor_name 与 locked_version
+    都保持为历史快照，绝不改写。
+    """
+    return append_version(
+        penalty,
+        points=penalty.points,
+        escalation_level=penalty.escalation_level,
+        kind=PenaltyVersion.Kind.ATTRIBUTION,
+        reason=reason,
+        actor=actor,
+    )
+
+
+@transaction.atomic
 def escalate_penalty(
     penalty: PenaltyUnit, *, level: int, reason: str, actor: str
 ) -> PenaltyVersion:

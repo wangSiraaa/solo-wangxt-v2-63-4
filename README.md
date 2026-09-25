@@ -14,6 +14,10 @@ Django REST Framework + Pillow(pHash) + PostgreSQL/PostGIS 实现的纯 API 服�
 | 复核锁定、更正只能追加 | 复核通过把 `locked_version` 指向当前版本；更正/升级一律 `PenaltyVersion` append-only，历史行不可改，追加后重新待复核 |
 | 每笔扣分可追溯 | `penalty_no` 唯一 → 事件、责任合同/承包商、版本链、升级记录、复核记录、全部证据照片（含经纬度/拍摄时间/pHash） |
 | 证据保全 | 照片只可上传/查询，不提供修改、删除（405）；处罚/版本只读 + 专用动作端点 |
+| 网格/合同登记错误可追溯修订 | 修订**提案**带基准快照+有效时间，经冲突校验/影响预览/确认发布；历史 append-only（`GridHistory`/`ContractHistory`），不就地覆盖“按发生时归属” |
+| 同一时空唯一责任归属 | 网格面不重叠、同网格合同半开区间不重叠；重叠/断档提案被拒（409），无半套数据 |
+| 命中未锁定事件 | 确认前只形成**待确认调整**（`RevisionImpactItem`），归属一律不改；确认后单事务精确改挂事件与处罚 |
+| 命中已锁定处罚 | 原合同/承包商快照与锁定版本指针**保留**，只追加 `attribution` 版本（重新待复核）+ `AttributionCorrection` 审计链，不改写历史 |
 
 pHash：Pillow 实现的 64 位 DCT 感知哈希（`assessment/services/phash.py`，仅依赖 Pillow）。
 
@@ -61,8 +65,28 @@ python manage.py runserver
 | `POST /api/escalations/run/` | 逾期扫描（可注入 `now`），返回新建升级数；幂等 |
 | `POST /api/penalties/{id}/review/` | 复核，`approved=true` 锁定当前版本 |
 | `POST /api/penalties/{id}/correct/` | 人工更正：只追加一个 correction 版本 |
-| `GET /api/penalties/{id}/` | 完整追溯：事件、承包商、版本链、升级、复核、证据 |
+| `GET /api/penalties/{id}/` | 完整追溯：事件、承包商、版本链、升级、复核、证据、归属更正审计链 |
 | `/api/grids/` `/api/contracts/` `/api/events/` `/api/penalty-versions/` `/api/rectifications/` | 基础数据只读/维护 |
+
+### 责任区 / 合同修订（登记错误追溯更正）
+
+| 方法 路径 | 说明 |
+| --- | --- |
+| `POST /api/revisions/contracts/{id}/propose/` | 合同修订提案：新承包商/区间/改挂网格 + 修订有效时间；创建即计算影响项（待确认调整） |
+| `POST /api/revisions/grids/{id}/propose/` | 网格边界/名称修订提案（GeoJSON 新几何 + 有效时间） |
+| `POST /api/revisions/contracts/{id}/preview/` | 无状态合同影响预览（不落库）：受影响照片/事件/处罚与修订前后归属 |
+| `POST /api/revisions/grids/{id}/preview/` | 无状态网格影响预览 |
+| `GET /api/revisions/` `/api/revisions/{id}/` | 提案检索（含基准快照、`impact_items`、`attribution_corrections`、影响摘要） |
+| `POST /api/revisions/{id}/confirm/` | 确认发布：重新时空校验 + 基准乐观锁，全部命中后单事务应用；失败整体回滚 |
+| `POST /api/revisions/{id}/withdraw/` | 撤回待确认提案（待确认调整随提案作废，不改任何归属） |
+| `POST /api/revisions/{id}/replace/` | 以新内容替代：旧提案 `superseded`，新提案继承基准并重算影响 |
+| `POST /api/revisions/{id}/refresh/` | 基准漂移后刷新恢复（重新锚定基准、重算待确认调整） |
+| `/api/revision-impacts/` | 影响项（待确认调整）只读：按 `proposal/disposition/state/event/penalty/photo` 过滤 |
+| `/api/attribution-corrections/` | 命中锁定处罚的归属更正审计链（从/到承包商、提案、追加版本）只读 |
+| `/api/grid-history/` `/api/contract-history/` | 网格/合同 append-only 历史快照（迁移基线 `revision=null`，发布行带提案）只读 |
+
+修订影响项 `disposition`：`unlocked_attribution`（确认后改挂）、`locked_correction`（保留快照+追加版本复核）、
+`unresolved`（修订后断档/重叠，硬冲突禁止发布）、`future`（未来事件，只影响新事件不改历史）、`photo_only`（证据信息项）。
 
 ## 典型流程（三个关键例子）
 
@@ -88,9 +112,14 @@ scene_c_bins      距离 28  —— 明显不同现场（不产生候选）
 python manage.py test assessment -v 2
 ```
 
-5 个用例（真实 PostGIS 测试库，迁移自动 `CREATE EXTENSION postgis`）：
-pHash 距离、完整业务流（误传/复发/挂接/重复整改/历史归属/无合同/证据保全/追溯）、
-注入时钟升级 + 复核锁定 + 追加更正、合同重叠 409、OpenAPI schema。
+真实 PostGIS 测试库（迁移自动 `CREATE EXTENSION postgis`），共 20 个用例：
+
+* `test_api.py`（5 个）：pHash 距离、完整业务流（误传/复发/挂接/重复整改/历史归属/无合同/证据保全/追溯）、
+  注入时钟升级 + 复核锁定 + 追加更正、合同重叠 409、OpenAPI schema。
+* `test_revisions.py`（15 个）：未来修订只影响新事件；追溯命中未锁定事件确认前后归属；
+  命中锁定处罚保留快照+追加 attribution 版本+审计链；网格/合同重叠与断档被拒；
+  重复提交/同目标多 draft/并发发布拒绝且无半套数据；失败整体回滚；撤回/替代/基准漂移刷新恢复；
+  旧网格/合同迁移后去重、整改、归属不回归。
 
 ## 目录
 
@@ -98,14 +127,19 @@ pHash 距离、完整业务流（误传/复发/挂接/重复整改/历史归属/
 sanitation/settings.py          # PostGIS、drf-spectacular、业务阈值
 assessment/
   models.py                     # 网格/合同/事件/照片/候选/整改/处罚单元/版本/升级/复核
+                                # + 修订提案/影响项/归属更正/网格·合同历史快照
   services/
     phash.py                    # Pillow 感知哈希
     duplicates.py               # 仅按 pHash 生成候选
     attribution.py              # 发生时合同归属（PostGIS 空间查询）
     events.py / rectification.py / penalties.py / escalation.py / decisions.py
+    revision_world.py           # 修订“模拟世界”：提案生效后的时空归属解析（只读）
+    revisions.py                # 提案/冲突校验/影响预览/确认发布/撤回/替代（单事务）
     clock.py                    # SystemClock / FixedClock / OffsetClock
+  migrations/0003_*.py 0004_*.py # 修订表结构 + 旧网格/合同历史回填（revision=null 基线）
   mockimages.py                 # 5 张确定性模拟图片
   management/commands/          # generate_mock_images / seed_demo
   tests/test_api.py             # 端到端测试
+  tests/test_revisions.py       # 修订子系统验收测试（含并发/回滚）
 docs/openapi.{json,yml}
 ```
